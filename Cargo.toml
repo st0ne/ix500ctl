@@ -1,0 +1,14 @@
+[package]
+name = "ix500ctl"
+version = "0.1.0"
+edition = "2021"
+description = "Linux USB identification and Wi-Fi provisioning for Fujitsu ScanSnap iX500"
+license = "Apache-2.0"
+repository = "https://github.com/st0ne/ix500ctl"
+readme = "README.md"
+keywords = ["scansnap", "scanner", "usb", "wifi"]
+categories = ["command-line-utilities", "hardware-support"]
+
+[[bin]]
+name = "ix500ctl"
+path = "src/main.rs"

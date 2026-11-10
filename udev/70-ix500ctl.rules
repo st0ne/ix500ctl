@@ -1,0 +1,2 @@
+# Allows the active desktop user to access only a Fujitsu ScanSnap iX500.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04c5", ATTR{idProduct}=="132b", TAG+="uaccess"
