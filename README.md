@@ -1,6 +1,6 @@
 # ix500ctl
 
-`ix500ctl` is a native Linux command-line utility for reading device information and configuring Wi-Fi on the Fujitsu ScanSnap iX500 over USB. It is written in Rust and uses the system `libusb-1.0` library; it does not require Windows, Wine, .NET, or proprietary ScanSnap software.
+`ix500ctl` is a Linux command-line utility for configuring and inspecting Fujitsu ScanSnap iX500 scanners over USB. It does not provide scanning functionality. It is written in Rust and uses the system `libusb-1.0` library; it does not require Windows, Wine, .NET, or proprietary ScanSnap software.
 
 A real-device test completed WPA2-Personal provisioning on an iX500, and the scanner subsequently joined the configured wireless network.
 
@@ -10,13 +10,15 @@ A real-device test completed WPA2-Personal provisioning on an iX500, and the sca
 |---|---|---|
 | Fujitsu ScanSnap iX500 | `04c5:132b` | `0U00` |
 
-Firmware `0U00` is the only firmware currently tested for Wi-Fi provisioning and the device-info response.
+Firmware `0U00` is the only firmware currently tested for Wi-Fi provisioning and the device-info response. The network commands fail closed unless the scanner identifies as an iX500 running firmware `0U00`; IP configuration has not yet been verified on other firmware versions or models.
 
 ## Features
 
 - Read scanner identity and firmware information.
 - Read the Wi-Fi hardware-switch status.
 - Read and display the iX500 WLAN MAC address.
+- Read the scanner-reported IPv4 profile values over USB.
+- Request DHCP or configure a static IPv4 address, subnet mask, and gateway.
 - Configure a WPA2-PSK/AES wireless network through the scanner's USB interface.
 - Prompt for the network password with terminal echo disabled; passwords are not accepted as command-line arguments.
 - Provide optional protocol diagnostics with sensitive WLAN SET payload data redacted.
@@ -76,6 +78,10 @@ ix500ctl info
 ix500ctl device info
 ix500ctl firmware info
 ix500ctl wifi status
+ix500ctl wifi profile
+ix500ctl network show
+ix500ctl network set --dhcp
+ix500ctl network set --static --ip 192.168.1.50 --netmask 255.255.255.0 --gateway 192.168.1.1
 ```
 
 Configure a WPA2-Personal network by entering the password at the hidden prompt:
@@ -87,7 +93,36 @@ ix500ctl wifi set \
   --ask-password
 ```
 
-Optional protocol diagnostics:
+## IPv4 network configuration
+
+Read the IPv4 values reported by the scanner over USB:
+
+```sh
+ix500ctl network show
+```
+
+The output labels these as scanner-reported profile values. They are not proof of the currently assigned runtime address or a DHCP lease. A value of `0.0.0.0` therefore does not establish whether the scanner has a usable address on the WLAN.
+
+Request DHCP:
+
+```sh
+ix500ctl network set --dhcp
+```
+
+Configure a static IPv4 address (all three values are required):
+
+```sh
+ix500ctl network set --static \
+  --ip 192.168.1.50 \
+  --netmask 255.255.255.0 \
+  --gateway 192.168.1.1
+```
+
+Static values are validated as IPv4 addresses with a contiguous subnet mask; the address and gateway must be usable hosts in the same subnet and must differ. The command does not configure DNS, proxy, or IPv6, trigger a separate reboot, perform network discovery, or inspect a router's lease table. A successful scanner command response confirms only that the configuration operation completed; verify a current DHCP lease separately in the router or on the network. If the result becomes ambiguous after transfer, `ix500ctl` reports it as unconfirmed and does not repeat the IP-setting command; inspect with `network show` before any further write.
+
+IP configuration is restricted by preflight to ScanSnap iX500 firmware `0U00`. The DHCP command was executed once on an iX500 running `0U00` and the scanner reported completion. A subsequent USB profile read still reported `0.0.0.0` for the address, mask, and gateway; because these are profile values, that does not confirm either a lease or a failure to obtain one. Static IP configuration has only been unit-tested, not written to hardware. No other model or firmware is supported or verified.
+
+## Optional protocol diagnostics
 
 ```sh
 ix500ctl wifi set \
