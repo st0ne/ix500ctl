@@ -10,15 +10,14 @@ A real-device test completed WPA2-Personal provisioning on an iX500, and the sca
 |---|---|---|
 | Fujitsu ScanSnap iX500 | `04c5:132b` | `0U00` |
 
-Firmware `0U00` is the only firmware currently tested for Wi-Fi provisioning and the device-info response. The network commands fail closed unless the scanner identifies as an iX500 running firmware `0U00`; IP configuration has not yet been verified on other firmware versions or models.
+Firmware `0U00` is the only firmware currently tested for Wi-Fi provisioning and the device-info response. The network profile read fails closed unless the scanner identifies as an iX500 running firmware `0U00`; IP writes remain unavailable pending a complete no-duplicate retry/recovery policy and hardware validation.
 
 ## Features
 
 - Read scanner identity and firmware information.
 - Read the Wi-Fi hardware-switch status.
 - Read and display the iX500 WLAN MAC address.
-- Read the scanner-reported IPv4 profile values over USB.
-- Request DHCP or configure a static IPv4 address, subnet mask, and gateway.
+- Read the scanner-reported IPv4 profile values over USB; IP writes are currently unavailable.
 - Configure a WPA2-PSK/AES wireless network through the scanner's USB interface.
 - Prompt for the network password with terminal echo disabled; passwords are not accepted as command-line arguments.
 - Provide optional protocol diagnostics with sensitive WLAN SET payload data redacted.
@@ -80,8 +79,6 @@ ix500ctl firmware info
 ix500ctl wifi status
 ix500ctl wifi profile
 ix500ctl network show
-ix500ctl network set --dhcp
-ix500ctl network set --static --ip 192.168.1.50 --netmask 255.255.255.0 --gateway 192.168.1.1
 ```
 
 Configure a WPA2-Personal network by entering the password at the hidden prompt:
@@ -95,32 +92,13 @@ ix500ctl wifi set \
 
 ## IPv4 network configuration
 
-Read the IPv4 values reported by the scanner over USB:
+The current CLI exposes only `network show`:
 
 ```sh
 ix500ctl network show
 ```
 
-The output labels these as scanner-reported profile values. They are not proof of the currently assigned runtime address or a DHCP lease. A value of `0.0.0.0` therefore does not establish whether the scanner has a usable address on the WLAN.
-
-Request DHCP:
-
-```sh
-ix500ctl network set --dhcp
-```
-
-Configure a static IPv4 address (all three values are required):
-
-```sh
-ix500ctl network set --static \
-  --ip 192.168.1.50 \
-  --netmask 255.255.255.0 \
-  --gateway 192.168.1.1
-```
-
-Static values are validated as IPv4 addresses with a contiguous subnet mask; the address and gateway must be usable hosts in the same subnet and must differ. The command does not configure DNS, proxy, or IPv6, trigger a separate reboot, perform network discovery, or inspect a router's lease table. A successful scanner command response confirms only that the configuration operation completed; verify a current DHCP lease separately in the router or on the network. If the result becomes ambiguous after transfer, `ix500ctl` reports it as unconfirmed and does not repeat the IP-setting command; inspect with `network show` before any further write.
-
-IP configuration is restricted by preflight to ScanSnap iX500 firmware `0U00`. The DHCP command was executed once on an iX500 running `0U00` and the scanner reported completion. A subsequent USB profile read still reported `0.0.0.0` for the address, mask, and gateway; because these are profile values, that does not confirm either a lease or a failure to obtain one. Static IP configuration has only been unit-tested, not written to hardware. No other model or firmware is supported or verified.
+The output contains scanner-reported profile values, not proof of the current runtime address or a DHCP lease. `0.0.0.0` in those fields alone does not establish DHCP failure. In the native result mapper, an application result of `0` produces API return `0`; `0x10` produces API return `1`; other values produce `91`. The C# wrapper passes these returns through (apart from its special recovery path for `90`), and the UI treats `0` and `-101` as success-like while reporting other values as errors. Thus the normal `0` result is consistent; poll status `0x10` and the application-result DWORD are separate layers. The DLL and EXE metadata show different build dates/PDB source paths, so exact release pairing remains unproven. IP writes remain removed from the executable CLI pending a complete no-duplicate retry/recovery policy and hardware validation.
 
 ## Optional protocol diagnostics
 

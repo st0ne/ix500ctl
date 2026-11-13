@@ -1,26 +1,32 @@
+#[cfg(test)]
+use crate::protocol;
 use crate::{
     device_info,
-    protocol::{self, BulkTransport},
+    protocol::BulkTransport,
     scanner,
     usb::Scanner,
-    wifi::{self, PossessionSession, PossessionState},
+    wifi::{PossessionSession, PossessionState},
 };
-use std::{
-    net::Ipv4Addr,
-    time::{Duration, Instant},
-};
+#[cfg(test)]
+use std::net::Ipv4Addr;
+use std::time::Duration;
 
+#[cfg(test)]
 const SETUP_NET_CMD: &[u8; 16] = b"SETUP NET CMD   ";
+#[cfg(test)]
 const REQUEST_HEADER_LEN: usize = 0x24;
+#[cfg(test)]
 const REQUEST_DATA_LEN: usize = 0x8c;
+#[cfg(test)]
 const REQUEST_LEN: usize = REQUEST_HEADER_LEN + REQUEST_DATA_LEN;
+// Usb_Device_Info passes response+0x14 to fcn1001bf20. The native formatter
+// reads the raw type at +0x1b8 and 16-byte strings at +0x1bc/+0x1cc/+0x1dc.
+// These are their absolute offsets in the 604-byte Result-Poll response.
 const IP_TYPE_OFFSET: usize = 0x1cc;
 const IP_ADDRESS_OFFSET: usize = 0x1d0;
 const NETMASK_OFFSET: usize = 0x1e0;
 const GATEWAY_OFFSET: usize = 0x1f0;
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
-const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_RESULT_POLLS: usize = 360;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpConfigurationType {
@@ -48,8 +54,9 @@ pub struct NetworkProfile {
     pub gateway: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IpConfiguration {
+enum IpConfiguration {
     Dhcp,
     Static {
         ip: Ipv4Addr,
@@ -58,6 +65,7 @@ pub enum IpConfiguration {
     },
 }
 
+#[cfg(test)]
 impl IpConfiguration {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut mode = None;
@@ -112,6 +120,7 @@ impl IpConfiguration {
     }
 }
 
+#[cfg(test)]
 fn set_option<'a>(
     target: &mut Option<&'a str>,
     args: &'a [String],
@@ -129,12 +138,14 @@ fn set_option<'a>(
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_ipv4(value: &str, option: &str) -> Result<Ipv4Addr, String> {
     value
         .parse()
         .map_err(|_| format!("{option} must be a valid IPv4 address"))
 }
 
+#[cfg(test)]
 fn validate_static_ipv4(ip: Ipv4Addr, netmask: Ipv4Addr, gateway: Ipv4Addr) -> Result<(), String> {
     let mask = u32::from(netmask);
     let prefix_len = mask.leading_ones();
@@ -174,7 +185,8 @@ fn validate_static_ipv4(ip: Ipv4Addr, netmask: Ipv4Addr, gateway: Ipv4Addr) -> R
     Ok(())
 }
 
-pub fn build_ip_setting_request(config: &IpConfiguration) -> [u8; REQUEST_LEN] {
+#[cfg(test)]
+fn build_ip_setting_request(config: &IpConfiguration) -> [u8; REQUEST_LEN] {
     let mut request = [0u8; REQUEST_LEN];
     request[..16].copy_from_slice(SETUP_NET_CMD);
     request[16..18].copy_from_slice(&0x9c00u16.to_le_bytes());
@@ -201,10 +213,12 @@ pub fn build_ip_setting_request(config: &IpConfiguration) -> [u8; REQUEST_LEN] {
     request
 }
 
+#[cfg(test)]
 fn copy_ipv4_slot(slot: &mut [u8], address: Ipv4Addr) {
     copy_text_slot(slot, &address.to_string());
 }
 
+#[cfg(test)]
 fn copy_text_slot(slot: &mut [u8], text: &str) {
     slot[..text.len()].copy_from_slice(text.as_bytes());
 }
@@ -266,6 +280,7 @@ pub fn format_network_profile(profile: &NetworkProfile) -> String {
     )
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SetIpError {
     Unconfirmed {
@@ -274,6 +289,7 @@ enum SetIpError {
     },
 }
 
+#[cfg(test)]
 impl std::fmt::Display for SetIpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -294,67 +310,52 @@ impl std::fmt::Display for SetIpError {
     }
 }
 
-fn set_ip_configuration_once<T, F>(
+#[cfg(test)]
+// One-shot fixture only: the production CLI has no IP write path. Native retry
+// and recovery branches are deliberately not reproduced in this fixture.
+fn set_ip_configuration_once<T: BulkTransport>(
     transport: &mut T,
     request: &[u8; REQUEST_LEN],
-    timeout: Duration,
-    mut sleep: F,
-) -> Result<(), SetIpError>
-where
-    T: BulkTransport,
-    F: FnMut(Duration),
-{
-    let cdb = wifi::diagnostic_cdb(0x1d, REQUEST_LEN)
-        .expect("the statically sized IP request fits the SCSI transfer field");
+) -> Result<(), SetIpError> {
+    let cdb = [0x1d, 0, 0, 0, 0xb0, 0];
     protocol::scsi_write(transport, &cdb, request).map_err(|error| SetIpError::Unconfirmed {
         detail: format!("USB command/data/status transfer failed: {error}"),
         native_code: None,
     })?;
 
-    let started = Instant::now();
-    for attempt in 0..MAX_RESULT_POLLS {
-        let response =
-            wifi::poll_result_once(transport).map_err(|error| SetIpError::Unconfirmed {
+    let response =
+        protocol::scsi_read_sti(transport, &[0x1c, 0, 0, 0, 0x14, 0], 20).map_err(|error| {
+            SetIpError::Unconfirmed {
                 detail: format!("Result-Poll transport failed after the single IP write: {error}"),
                 native_code: None,
-            })?;
-        match response.result {
-            wifi::ApplicationResult::Complete => return Ok(()),
-            wifi::ApplicationResult::Pending => {
-                let elapsed = started.elapsed();
-                if elapsed >= timeout || attempt + 1 == MAX_RESULT_POLLS {
-                    return Err(SetIpError::Unconfirmed {
-                        detail: "Result-Poll timed out after the request transfer".into(),
-                        native_code: Some(9),
-                    });
-                }
-                sleep(RESULT_POLL_INTERVAL.min(timeout - elapsed));
             }
-            wifi::ApplicationResult::DeviceError(0x83) => {
-                return Err(SetIpError::Unconfirmed {
-                    detail: "scanner returned Result-Poll status 0x83; the Windows path performs possession recovery and may reissue the IP command, but ix500ctl deliberately does not retry".into(),
-                    native_code: None,
-                });
-            }
-            wifi::ApplicationResult::DeviceError(code) => {
-                let native_code = match code {
-                    0x80 => 128,
-                    0x81 => 7,
-                    0x82 => 130,
-                    _ => 91,
-                };
-                return Err(SetIpError::Unconfirmed {
-                    detail: format!(
-                        "scanner returned Result-Poll status 0x{code:02x}; native status {native_code} is not a successful completion"
-                    ),
-                    native_code: Some(native_code),
-                });
-            }
-        }
+        })?;
+    let poll_status = response[0];
+    if poll_status == 0x00 || poll_status == 0x10 {
+        let application_result =
+            u32::from_le_bytes(response[12..16].try_into().expect("response length is 20"));
+        let native_code = match application_result {
+            0 => return Ok(()),
+            0x10 => 1,
+            _ => 91,
+        };
+        return Err(SetIpError::Unconfirmed {
+            detail: format!("terminal Result-Poll status 0x{poll_status:02x} exposed application result 0x{application_result:08x}; native Usb_Ip_Setting maps it to API return {native_code}, which the Windows wrapper passes through as an error; final device state remains unverified"),
+            native_code: Some(native_code),
+        });
     }
+    let native_code = match poll_status {
+        0x01 => None,
+        0x80 => Some(128),
+        0x82 => Some(130),
+        0x11 | 0x81 | 0x83 => None,
+        _ => Some(91),
+    };
     Err(SetIpError::Unconfirmed {
-        detail: "Result-Poll exhausted the native 360-poll limit".into(),
-        native_code: Some(9),
+        detail: format!(
+            "Result-Poll status 0x{poll_status:02x} is not confirmed completion; no IP write was retried"
+        ),
+        native_code,
     })
 }
 
@@ -364,17 +365,6 @@ pub fn show() -> Result<(), String> {
     println!("Target: Fujitsu ScanSnap iX500 firmware 0U00");
     let profile = read_profile_from(&mut scanner)?;
     println!("{}", format_network_profile(&profile));
-    Ok(())
-}
-
-pub fn set(config: &IpConfiguration) -> Result<(), String> {
-    let mut scanner = Scanner::open()?;
-    verify_supported_device(&mut scanner)?;
-    println!("Target: Fujitsu ScanSnap iX500 firmware 0U00");
-    let request = build_ip_setting_request(config);
-    set_ip_configuration_once(&mut scanner, &request, NETWORK_TIMEOUT, std::thread::sleep)
-        .map_err(|error| error.to_string())?;
-    println!("Scanner reported the IP configuration command completed successfully. A current DHCP lease is not established by this response.");
     Ok(())
 }
 
@@ -429,27 +419,28 @@ mod tests {
     }
 
     #[test]
-    fn dhcp_request_serializes_exact_windows_command_and_zero_address_placeholders() {
+    fn dhcp_request_matches_independent_native_reference_bytes() {
         let request = build_ip_setting_request(&IpConfiguration::Dhcp);
-        assert_eq!(request.len(), 0xb0);
-        assert_eq!(&request[..16], b"SETUP NET CMD   ");
-        assert_eq!(&request[16..18], &0x9c00u16.to_le_bytes());
-        assert_eq!(&request[18..20], &[0, 0]);
-        assert_eq!(&request[20..24], &0x1003u32.to_le_bytes());
-        assert_eq!(&request[24..32], &[0; 8]);
-        assert_eq!(&request[32..36], &0x8cu32.to_le_bytes());
-        assert_eq!(&request[36..40], &1u32.to_le_bytes());
-        for slot in [40..56, 56..72, 72..88] {
-            assert_eq!(&request[slot.start..slot.start + 7], b"0.0.0.0");
-            assert!(request[slot.start + 7..slot.end]
-                .iter()
-                .all(|byte| *byte == 0));
-        }
-        assert_eq!(&request[88..], &[0; 0x58]);
+        let zero_address = b"0.0.0.0\0\0\0\0\0\0\0\0\0";
+        let expected = [
+            &b"SETUP NET CMD   "[..],
+            &[0x00, 0x9c, 0, 0],
+            &[0x03, 0x10, 0, 0],
+            &[0; 8],
+            &[0x8c, 0, 0, 0],
+            &[1, 0, 0, 0],
+            &zero_address[..],
+            &zero_address[..],
+            &zero_address[..],
+            &[0; 88],
+        ]
+        .concat();
+        assert_eq!(expected.len(), 0xb0);
+        assert_eq!(request.as_slice(), expected);
     }
 
     #[test]
-    fn static_request_serializes_canonical_ipv4_strings_at_exact_offsets() {
+    fn static_request_matches_independent_native_reference_bytes() {
         let config = IpConfiguration::parse(&values(&[
             "--static",
             "--ip",
@@ -461,11 +452,21 @@ mod tests {
         ]))
         .unwrap();
         let request = build_ip_setting_request(&config);
-        assert_eq!(&request[36..40], &0u32.to_le_bytes());
-        assert_eq!(&request[40..56], b"192.168.1.50\0\0\0\0");
-        assert_eq!(&request[56..72], b"255.255.255.0\0\0\0");
-        assert_eq!(&request[72..88], b"192.168.1.1\0\0\0\0\0");
-        assert_eq!(&request[88..], &[0; 0x58]);
+        let expected = [
+            &b"SETUP NET CMD   "[..],
+            &[0x00, 0x9c, 0, 0],
+            &[0x03, 0x10, 0, 0],
+            &[0; 8],
+            &[0x8c, 0, 0, 0],
+            &[0, 0, 0, 0],
+            &b"192.168.1.50\0\0\0\0"[..],
+            &b"255.255.255.0\0\0\0"[..],
+            &b"192.168.1.1\0\0\0\0\0"[..],
+            &[0; 88],
+        ]
+        .concat();
+        assert_eq!(expected.len(), 0xb0);
+        assert_eq!(request.as_slice(), expected);
     }
 
     #[test]
@@ -561,26 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_ip_setting_is_acknowledged_once_after_poll_completion_status() {
-        let mut response = [0u8; 20];
-        response[8..12].copy_from_slice(&0u32.to_le_bytes());
-        let mut fake = FakeTransport::with_reads(vec![
-            status_frame(0).to_vec(),
-            response.to_vec(),
-            status_frame(0).to_vec(),
-        ]);
-        set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap();
-        assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
-    }
-
-    #[test]
-    fn scanner_error_poll_status_is_mapped_and_not_retried() {
+    fn native_application_result_zero_maps_to_api_zero_and_matches_windows_success() {
         let mut response = [0u8; 20];
         response[0] = 0x10;
         let mut fake = FakeTransport::with_reads(vec![
@@ -588,21 +570,53 @@ mod tests {
             response.to_vec(),
             status_frame(0).to_vec(),
         ]);
-        let error = set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("native status 91"));
-        assert!(message.contains("0x10"));
+        set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+            .unwrap();
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
     }
 
     #[test]
-    fn poll_timeout_after_one_write_is_reported_as_unconfirmed_without_retry() {
+    fn native_application_result_0x10_also_maps_to_wrapper_rejected_return_1() {
+        let mut response = [0u8; 20];
+        response[0] = 0x10;
+        response[12..16].copy_from_slice(&0x10u32.to_le_bytes());
+        let mut fake = FakeTransport::with_reads(vec![
+            status_frame(0).to_vec(),
+            response.to_vec(),
+            status_frame(0).to_vec(),
+        ]);
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("application result 0x00000010"));
+        assert!(error.contains("API return 1"));
+        assert!(error.contains("passes through as an error"));
+        assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
+    }
+
+    #[test]
+    fn poll_status_zero_uses_application_result_for_native_return_mapping() {
+        let mut response = [0u8; 20];
+        response[0] = 0;
+        response[12..16].copy_from_slice(&0x10u32.to_le_bytes());
+        let mut fake = FakeTransport::with_reads(vec![
+            status_frame(0).to_vec(),
+            response.to_vec(),
+            status_frame(0).to_vec(),
+        ]);
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("application result 0x00000010"));
+        assert!(message.contains("API return 1"));
+        assert!(message.contains("terminal Result-Poll status 0x00"));
+        assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
+    }
+
+    #[test]
+    fn native_status_0x01_is_not_assumed_complete_or_retried() {
         let mut response = [0u8; 20];
         response[0] = 1;
         let mut fake = FakeTransport::with_reads(vec![
@@ -610,13 +624,9 @@ mod tests {
             response.to_vec(),
             status_frame(0).to_vec(),
         ]);
-        let error = set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::ZERO,
-            |_| {},
-        )
-        .unwrap_err();
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err();
         assert!(error.to_string().contains("unconfirmed"));
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
     }
@@ -630,13 +640,9 @@ mod tests {
             response.to_vec(),
             status_frame(0).to_vec(),
         ]);
-        let error = set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap_err();
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("unconfirmed"));
         assert!(message.contains("0x83"));
@@ -647,13 +653,9 @@ mod tests {
     #[test]
     fn transport_failure_after_request_transfer_is_unconfirmed_without_retry() {
         let mut fake = FakeTransport::with_read_error("USB read timeout");
-        let error = set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap_err();
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err();
         assert!(error.to_string().contains("unconfirmed"));
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
     }
@@ -661,11 +663,12 @@ mod tests {
     #[test]
     fn scanner_return_poll_statuses_are_mapped_without_reissuing_the_write() {
         for (poll_status, expected_detail) in [
-            (0x10, "native status 91"),
-            (0x11, "native status 91"),
-            (0x80, "native status 128"),
-            (0x81, "native status 7"),
-            (0x82, "native status 130"),
+            (0x01, None),
+            (0x11, None),
+            (0x80, Some("native status 128")),
+            (0x81, None),
+            (0x82, Some("native status 130")),
+            (0x83, None),
         ] {
             let mut response = [0u8; 20];
             response[0] = poll_status;
@@ -677,32 +680,35 @@ mod tests {
             let error = set_ip_configuration_once(
                 &mut fake,
                 &build_ip_setting_request(&IpConfiguration::Dhcp),
-                Duration::from_secs(30),
-                |_| {},
             )
             .unwrap_err()
             .to_string();
-            assert!(error.contains(expected_detail));
+            assert!(error.contains(&format!("0x{poll_status:02x}")));
+            if let Some(expected_detail) = expected_detail {
+                assert!(error.contains(expected_detail));
+            } else {
+                assert!(!error.contains("native status"));
+            }
             assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
         }
     }
 
     #[test]
-    fn completion_status_is_success_without_interpreting_opaque_result_bytes() {
+    fn unknown_native_application_result_maps_to_91_and_is_not_accepted() {
         let mut response = [0u8; 20];
-        response[8..12].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+        response[0] = 0x10;
+        response[12..16].copy_from_slice(&0xdead_beefu32.to_le_bytes());
         let mut fake = FakeTransport::with_reads(vec![
             status_frame(0).to_vec(),
             response.to_vec(),
             status_frame(0).to_vec(),
         ]);
-        set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap();
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("application result 0xdeadbeef"));
+        assert!(error.contains("API return 91"));
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
     }
 
@@ -713,13 +719,9 @@ mod tests {
             vec![0; 18],
             status_frame(0).to_vec(),
         ]);
-        let error = set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap_err();
+        let error =
+            set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+                .unwrap_err();
         assert!(error.to_string().contains("unconfirmed"));
         assert!(error.to_string().contains("CHECK CONDITION"));
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
@@ -727,33 +729,29 @@ mod tests {
     }
 
     #[test]
-    fn pending_poll_then_success_repolls_only_the_result_not_the_ip_write() {
-        let mut pending = [0u8; 20];
-        pending[0] = 1;
+    fn native_terminal_poll_0x10_is_20_bytes_and_never_reissues_the_ip_write() {
         let mut complete = [0u8; 20];
-        complete[8..12].copy_from_slice(&0u32.to_le_bytes());
+        complete[0] = 0x10;
+        complete[12..16].copy_from_slice(&0u32.to_le_bytes());
         let mut fake = FakeTransport::with_reads(vec![
-            status_frame(0).to_vec(),
-            pending.to_vec(),
             status_frame(0).to_vec(),
             complete.to_vec(),
             status_frame(0).to_vec(),
         ]);
-        set_ip_configuration_once(
-            &mut fake,
-            &build_ip_setting_request(&IpConfiguration::Dhcp),
-            Duration::from_secs(30),
-            |_| {},
-        )
-        .unwrap();
+        set_ip_configuration_once(&mut fake, &build_ip_setting_request(&IpConfiguration::Dhcp))
+            .unwrap();
         assert_eq!(count_ip_setting_payloads(&fake.writes), 1);
         assert_eq!(
             fake.writes
                 .iter()
                 .filter(|write| write.get(19) == Some(&0x1c))
                 .count(),
-            2
+            1
         );
+        assert!(fake
+            .writes
+            .iter()
+            .any(|write| write.get(19..25) == Some(&[0x1c, 0, 0, 0, 0x14, 0])));
     }
 
     #[test]
