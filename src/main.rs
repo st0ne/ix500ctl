@@ -30,6 +30,7 @@ fn run() -> Result<(), String> {
         [firmware, info] if firmware == "firmware" && info == "info" => scanner::firmware_info(),
         [device, info] if device == "device" && info == "info" => scanner::device_info(),
         [wifi, status] if wifi == "wifi" && status == "status" => wifi::read_status_from_scanner(),
+        [wifi, profile] if wifi == "wifi" && profile == "profile" => wifi_profile(),
         [wifi, set, rest @ ..] if wifi == "wifi" && set == "set" => wifi_set(rest),
         _ => {
             print_usage();
@@ -39,7 +40,27 @@ fn run() -> Result<(), String> {
 }
 
 fn print_usage() {
-    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]");
+    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]");
+}
+
+fn wifi_profile() -> Result<(), String> {
+    let mut scanner = usb::Scanner::open()?;
+    let identity = scanner::read_identity_from(&mut scanner)?;
+    let profile = device_info::read_scanner_profile(&mut scanner, &identity.firmware)?;
+    println!("{}", format_wifi_profile(&profile));
+    Ok(())
+}
+
+fn format_wifi_profile(profile: &device_info::WifiProfile) -> String {
+    [
+        "WLAN-Profil (gespeicherte/gemeldete Profilinformationen; keine Aussage zur aktuellen WLAN-Verbindung):".to_string(),
+        format!("SSID: {}", profile.ssid),
+        format!("Sicherheitstyp: {}", profile.security),
+        format!("Verschlüsselung: {}", profile.encryption),
+        format!("Betriebsmodus: {}", profile.mode),
+        format!("WLAN-MAC-Adresse: {}", profile.mac_address),
+    ]
+    .join(&char::from(10).to_string())
 }
 
 fn wifi_set(args: &[String]) -> Result<(), String> {
@@ -224,6 +245,31 @@ mod tests {
         assert!(require_wifi_switch_on(&response[..16])
             .unwrap_err()
             .contains("cannot validate"));
+    }
+
+    #[test]
+    fn profile_output_labels_stored_data_and_contains_only_allowed_fields() {
+        let profile = device_info::WifiProfile {
+            ssid: "NET-01".into(),
+            security: "WPA2".into(),
+            encryption: "AES".into(),
+            mode: "Managed".into(),
+            mac_address: "02:11:22:33:44:55".into(),
+        };
+        let output = format_wifi_profile(&profile);
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            [
+                "WLAN-Profil (gespeicherte/gemeldete Profilinformationen; keine Aussage zur aktuellen WLAN-Verbindung):",
+                "SSID: NET-01",
+                "Sicherheitstyp: WPA2",
+                "Verschlüsselung: AES",
+                "Betriebsmodus: Managed",
+                "WLAN-MAC-Adresse: 02:11:22:33:44:55",
+            ]
+        );
+        assert!(!output.contains("key"));
+        assert!(!output.contains("Schlüssel"));
     }
 }
 
