@@ -34,6 +34,7 @@ fn run() -> Result<(), String> {
         [wifi, profile] if wifi == "wifi" && profile == "profile" => wifi_profile(),
         [wifi, set, rest @ ..] if wifi == "wifi" && set == "set" => wifi_set(rest),
         [network, show] if network == "network" && show == "show" => network::show(),
+        [network, set, rest @ ..] if network == "network" && set == "set" => network::set(rest),
         _ => {
             print_usage();
             Err("unsupported or incomplete command".into())
@@ -42,7 +43,7 @@ fn run() -> Result<(), String> {
 }
 
 fn print_usage() {
-    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show");
+    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show\n  ix500ctl network set --dhcp\n  ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4");
 }
 
 fn wifi_profile() -> Result<(), String> {
