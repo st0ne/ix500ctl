@@ -1,6 +1,6 @@
 # ix500ctl
 
-`ix500ctl` is a native Linux command-line utility for reading device information and configuring Wi-Fi on the Fujitsu ScanSnap iX500 over USB. It is written in Rust and uses the system `libusb-1.0` library; it does not require Windows, Wine, .NET, or proprietary ScanSnap software.
+`ix500ctl` is a Linux command-line utility for configuring and inspecting Fujitsu ScanSnap iX500 scanners over USB. It does not provide scanning functionality. It is written in Rust and uses the system `libusb-1.0` library; it does not require Windows, Wine, .NET, or proprietary ScanSnap software.
 
 A real-device test completed WPA2-Personal provisioning on an iX500, and the scanner subsequently joined the configured wireless network.
 
@@ -10,13 +10,14 @@ A real-device test completed WPA2-Personal provisioning on an iX500, and the sca
 |---|---|---|
 | Fujitsu ScanSnap iX500 | `04c5:132b` | `0U00` |
 
-Firmware `0U00` is the only firmware currently tested for Wi-Fi provisioning and the device-info response.
+Firmware `0U00` is the only firmware supported by Wi-Fi provisioning, device-info parsing, and network commands. IP-setting requests use a one-shot transfer followed only by Result-Poll reads; an uncertain result is not retried automatically. The IP-setting path has not been hardware-validated.
 
 ## Features
 
 - Read scanner identity and firmware information.
 - Read the Wi-Fi hardware-switch status.
 - Read and display the iX500 WLAN MAC address.
+- Read and display the scanner-reported IPv4 profile; set DHCP or static IPv4 configuration over USB with a single SET and no automatic SET retry.
 - Configure a WPA2-PSK/AES wireless network through the scanner's USB interface.
 - Prompt for the network password with terminal echo disabled; passwords are not accepted as command-line arguments.
 - Provide optional protocol diagnostics with sensitive WLAN SET payload data redacted.
@@ -76,6 +77,10 @@ ix500ctl info
 ix500ctl device info
 ix500ctl firmware info
 ix500ctl wifi status
+ix500ctl wifi profile
+ix500ctl network show
+ix500ctl network set --dhcp
+ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4
 ```
 
 Configure a WPA2-Personal network by entering the password at the hidden prompt:
@@ -87,7 +92,28 @@ ix500ctl wifi set \
   --ask-password
 ```
 
-Optional protocol diagnostics:
+## IPv4 network configuration
+
+`network show` displays scanner-reported profile values. They are saved/reported configuration fields, not proof of a current runtime address, WLAN association, or DHCP lease. In particular, `0.0.0.0` by itself does not establish DHCP failure.
+
+Set DHCP mode:
+
+```sh
+ix500ctl network set --dhcp
+```
+
+Set a static IPv4 address (the address, mask, and gateway must be valid host addresses in the same subnet):
+
+```sh
+ix500ctl network set --static \
+  --ip 192.168.1.50 \
+  --netmask 255.255.255.0 \
+  --gateway 192.168.1.1
+```
+
+The command sends at most one IP-SET request. Result-Poll status and the application-result DWORD are interpreted separately. Application result `0` is success; `0x10` maps to native API error `1`; other application-result values map to API error `91`. A transport error, timeout, retry-signaling result, or unknown poll result stops without another SET and leaves the final device state unconfirmed. Even a reported application success does not prove that the scanner obtained a DHCP lease or is reachable on WLAN; verify association and runtime addressing separately.
+
+## Optional protocol diagnostics
 
 ```sh
 ix500ctl wifi set \
