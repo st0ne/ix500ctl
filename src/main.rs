@@ -32,6 +32,11 @@ fn run() -> Result<(), String> {
         [device, info] if device == "device" && info == "info" => scanner::device_info(),
         [wifi, status] if wifi == "wifi" && status == "status" => wifi::read_status_from_scanner(),
         [wifi, profile] if wifi == "wifi" && profile == "profile" => wifi_profile(),
+        [wifi, verify_key, ask_password]
+            if wifi == "wifi" && verify_key == "verify-key" && ask_password == "--ask-password" =>
+        {
+            wifi_verify_key()
+        }
         [wifi, set, rest @ ..] if wifi == "wifi" && set == "set" => wifi_set(rest),
         [network, show] if network == "network" && show == "show" => network::show(),
         [network, set, rest @ ..] if network == "network" && set == "set" => network::set(rest),
@@ -43,7 +48,7 @@ fn run() -> Result<(), String> {
 }
 
 fn print_usage() {
-    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show\n  ix500ctl network set --dhcp\n  ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4");
+    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi verify-key --ask-password\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show\n  ix500ctl network set --dhcp\n  ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4");
 }
 
 fn wifi_profile() -> Result<(), String> {
@@ -51,6 +56,43 @@ fn wifi_profile() -> Result<(), String> {
     let identity = scanner::read_identity_from(&mut scanner)?;
     let profile = device_info::read_scanner_profile(&mut scanner, &identity.firmware)?;
     println!("{}", format_wifi_profile(&profile));
+    Ok(())
+}
+
+fn wifi_verify_key() -> Result<(), String> {
+    let mut scanner = match usb::Scanner::open() {
+        Ok(scanner) => scanner,
+        Err(_) => {
+            println!("INCONCLUSIVE");
+            return Ok(());
+        }
+    };
+    let identity = match scanner::read_identity_from(&mut scanner) {
+        Ok(identity) => identity,
+        Err(_) => {
+            println!("INCONCLUSIVE");
+            return Ok(());
+        }
+    };
+    if identity.firmware != "0U00" {
+        println!("INCONCLUSIVE");
+        return Ok(());
+    }
+
+    let mut password = match read_password_hidden() {
+        Ok(password) => password,
+        Err(_) => {
+            println!("INCONCLUSIVE");
+            return Ok(());
+        }
+    };
+    let comparison = device_info::read_scanner_saved_key_comparison(
+        &mut scanner,
+        &identity.firmware,
+        &password.0,
+    );
+    password.0.fill(0);
+    println!("{}", comparison.as_str());
     Ok(())
 }
 

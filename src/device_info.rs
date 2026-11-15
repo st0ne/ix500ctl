@@ -17,6 +17,8 @@ const DEVICE_INFO_ENCRYPTION_REL_OFFSET: usize = 0x078;
 const DEVICE_INFO_MAC_REL_OFFSET: usize = 0x144;
 const DEVICE_INFO_MODE_REL_OFFSET: usize = 0x158;
 const DEVICE_INFO_MODE_END_REL_OFFSET: usize = 0x16c;
+const DEVICE_INFO_SEQKEY_OFFSET: usize = 0x094;
+const DEVICE_INFO_SEQKEY_MAX_ENCODED_LEN: usize = 64 * 3;
 const DEVICE_INFO_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_RESULT_POLLS: usize = 360;
@@ -220,6 +222,118 @@ pub fn read_scanner_profile<T: BulkTransport>(
     }
     let response = read_ix500_0u00_response(transport)?;
     parse_ix500_0u00_profile(&response)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedKeyComparison {
+    Match,
+    Mismatch,
+    Inconclusive,
+}
+
+impl SavedKeyComparison {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Match => "MATCH",
+            Self::Mismatch => "MISMATCH",
+            Self::Inconclusive => "INCONCLUSIVE",
+        }
+    }
+}
+
+/// Compare a hidden candidate against the NUL-terminated decimal SeqKey stored
+/// at response offset 0x094. Only status is returned; key bytes are never
+/// formatted or exposed. The native Device_Info decoder uses the default
+/// iX500 transform table, so comparison is against that exact forward encoding.
+pub fn compare_saved_seqkey(raw: &[u8], candidate: &[u8]) -> SavedKeyComparison {
+    if raw.len() != DEVICE_INFO_RESPONSE_LEN
+        || raw[0] != 0
+        || u32::from_le_bytes(raw[8..12].try_into().expect("response length checked")) != 0
+        || !crate::wifi::is_valid_wpa2_psk(candidate)
+    {
+        return SavedKeyComparison::Inconclusive;
+    }
+
+    if read_profile_text(
+        raw,
+        DEVICE_INFO_SECURITY_REL_OFFSET,
+        DEVICE_INFO_ENCRYPTION_REL_OFFSET,
+        "security type",
+    )
+    .ok()
+    .as_deref()
+        != Some("WPA2")
+        || read_profile_text(raw, DEVICE_INFO_ENCRYPTION_REL_OFFSET, 0x080, "encryption")
+            .ok()
+            .as_deref()
+            != Some("AES")
+    {
+        return SavedKeyComparison::Inconclusive;
+    }
+
+    let field = &raw[DEVICE_INFO_SEQKEY_OFFSET..DEVICE_INFO_MAC_OFFSET];
+    let Some(encoded_len) = field.iter().position(|byte| *byte == 0) else {
+        return SavedKeyComparison::Inconclusive;
+    };
+    if encoded_len == 0
+        || encoded_len > DEVICE_INFO_SEQKEY_MAX_ENCODED_LEN
+        || encoded_len % 3 != 0
+        || field[encoded_len + 1..].iter().any(|byte| *byte != 0)
+        || !valid_seqkey_triplets(&field[..encoded_len])
+    {
+        return SavedKeyComparison::Inconclusive;
+    }
+
+    let mut expected = crate::wifi::encode_wpa2_key_bytes(candidate);
+    let matches = field[..encoded_len] == expected;
+    expected.fill(0);
+    if matches {
+        SavedKeyComparison::Match
+    } else {
+        SavedKeyComparison::Mismatch
+    }
+}
+
+fn valid_seqkey_triplets(encoded: &[u8]) -> bool {
+    encoded.chunks_exact(3).all(|triplet| {
+        let decimal = triplet.iter().all(u8::is_ascii_digit);
+        let signed_decimal = triplet[0] == b'-' && triplet[1..].iter().all(u8::is_ascii_digit);
+        if !decimal && !signed_decimal {
+            return false;
+        }
+        let Ok(text) = std::str::from_utf8(triplet) else {
+            return false;
+        };
+        let Ok(value) = text.parse::<i16>() else {
+            return false;
+        };
+        (!signed_decimal || value < 0) && (-52..=260).contains(&value)
+    })
+}
+
+/// Read the current saved profile through the existing read-only Device_Info
+/// path. Any transport, parser, firmware, or possession ambiguity is
+/// deliberately collapsed to INCONCLUSIVE; no key bytes are logged.
+pub fn read_scanner_saved_key_comparison<T: BulkTransport>(
+    transport: &mut T,
+    firmware: &str,
+    candidate: &[u8],
+) -> SavedKeyComparison {
+    if firmware != "0U00" || !crate::wifi::is_valid_wpa2_psk(candidate) {
+        return SavedKeyComparison::Inconclusive;
+    }
+    let Ok(session) = PossessionSession::acquire(transport, DEVICE_INFO_TIMEOUT) else {
+        return SavedKeyComparison::Inconclusive;
+    };
+    if session.state() != PossessionState::Active {
+        return SavedKeyComparison::Inconclusive;
+    }
+    let Ok(mut response) = read_ix500_0u00_response(transport) else {
+        return SavedKeyComparison::Inconclusive;
+    };
+    let result = compare_saved_seqkey(&response, candidate);
+    response.fill(0);
+    result
 }
 
 /// Compatibility entry point used by the existing `device info` command.
@@ -480,6 +594,73 @@ mod tests {
         assert!(parse_ix500_0u00_profile(&raw).unwrap_err().contains("SSID"));
     }
 
+    #[test]
+    fn saved_seqkey_comparison_returns_only_match_or_mismatch_for_valid_fields() {
+        let matching = response_with_encoded_key(b"abcdefgh");
+        assert_eq!(
+            compare_saved_seqkey(&matching, b"abcdefgh"),
+            SavedKeyComparison::Match
+        );
+
+        let different_saved_value = response_with_encoded_key(b"ABCDEFGH");
+        assert_eq!(
+            compare_saved_seqkey(&different_saved_value, b"abcdefgh"),
+            SavedKeyComparison::Mismatch
+        );
+
+        let mut previous_rust_table = valid_profile_response();
+        previous_rust_table[DEVICE_INFO_SEQKEY_OFFSET..DEVICE_INFO_SEQKEY_OFFSET + 24]
+            .copy_from_slice(b"220179227226179178192230");
+        assert_eq!(
+            compare_saved_seqkey(&previous_rust_table, b"abcdefgh"),
+            SavedKeyComparison::Mismatch
+        );
+    }
+
+    #[test]
+    fn saved_seqkey_comparison_fails_closed_on_unverifiable_fields() {
+        let mut missing_terminator = valid_profile_response();
+        missing_terminator[DEVICE_INFO_SEQKEY_OFFSET..DEVICE_INFO_MAC_OFFSET].fill(b'0');
+        assert_eq!(
+            compare_saved_seqkey(&missing_terminator, b"abcdefgh"),
+            SavedKeyComparison::Inconclusive
+        );
+
+        let mut malformed_triplet = response_with_encoded_key(b"abcdefgh");
+        malformed_triplet[DEVICE_INFO_SEQKEY_OFFSET] = b'x';
+        assert_eq!(
+            compare_saved_seqkey(&malformed_triplet, b"abcdefgh"),
+            SavedKeyComparison::Inconclusive
+        );
+
+        let mut nonzero_padding = response_with_encoded_key(b"abcdefgh");
+        nonzero_padding[DEVICE_INFO_SEQKEY_OFFSET + 25] = b'1';
+        assert_eq!(
+            compare_saved_seqkey(&nonzero_padding, b"abcdefgh"),
+            SavedKeyComparison::Inconclusive
+        );
+
+        let valid_response = response_with_encoded_key(b"abcdefgh");
+        assert_eq!(
+            compare_saved_seqkey(&valid_response, b"short"),
+            SavedKeyComparison::Inconclusive
+        );
+
+        let mut failed_result = valid_response;
+        failed_result[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            compare_saved_seqkey(&failed_result, b"abcdefgh"),
+            SavedKeyComparison::Inconclusive
+        );
+    }
+
+    #[test]
+    fn saved_seqkey_status_strings_are_exact_and_secret_free() {
+        assert_eq!(SavedKeyComparison::Match.as_str(), "MATCH");
+        assert_eq!(SavedKeyComparison::Mismatch.as_str(), "MISMATCH");
+        assert_eq!(SavedKeyComparison::Inconclusive.as_str(), "INCONCLUSIVE");
+    }
+
     fn valid_profile_response() -> [u8; DEVICE_INFO_RESPONSE_LEN] {
         let mut raw = [0u8; DEVICE_INFO_RESPONSE_LEN];
         raw[0] = 0;
@@ -489,6 +670,15 @@ mod tests {
         raw[0x8c..0x8f].copy_from_slice(b"AES");
         raw[0x158..0x169].copy_from_slice(b"02:11:22:33:44:55");
         raw[0x16c..0x173].copy_from_slice(b"Managed");
+        raw
+    }
+
+    fn response_with_encoded_key(candidate: &[u8]) -> [u8; DEVICE_INFO_RESPONSE_LEN] {
+        let mut raw = valid_profile_response();
+        let mut encoded = crate::wifi::encode_wpa2_key_bytes(candidate);
+        let end = DEVICE_INFO_SEQKEY_OFFSET + encoded.len();
+        raw[DEVICE_INFO_SEQKEY_OFFSET..end].copy_from_slice(&encoded);
+        encoded.fill(0);
         raw
     }
 

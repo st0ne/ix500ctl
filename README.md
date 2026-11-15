@@ -19,6 +19,7 @@ Firmware `0U00` is the only firmware supported by Wi-Fi provisioning, device-inf
 - Read and display the iX500 WLAN MAC address.
 - Read and display the scanner-reported IPv4 profile; set DHCP or static IPv4 configuration over USB with a single SET and no automatic SET retry.
 - Configure a WPA2-PSK/AES wireless network through the scanner's USB interface.
+- Compare a hidden candidate against the saved WLAN key and emit only a status token.
 - Prompt for the network password with terminal echo disabled; passwords are not accepted as command-line arguments.
 - Provide optional protocol diagnostics with sensitive WLAN SET payload data redacted.
 
@@ -78,6 +79,7 @@ ix500ctl device info
 ix500ctl firmware info
 ix500ctl wifi status
 ix500ctl wifi profile
+ix500ctl wifi verify-key --ask-password
 ix500ctl network show
 ix500ctl network set --dhcp
 ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4
@@ -91,6 +93,14 @@ ix500ctl wifi set \
   --security WPA2-PSK \
   --ask-password
 ```
+
+## Saved WLAN key check
+
+```sh
+ix500ctl wifi verify-key --ask-password
+```
+
+The command makes a read-only Device_Info query and compares the hidden candidate with the scanner's saved SeqKey encoding. Standard output contains exactly one of `MATCH`, `MISMATCH`, or `INCONCLUSIVE`. `MATCH` verifies the saved profile value only; it does not prove that the scanner completed a WPA2 handshake or is currently associated with an access point. The password is never accepted as a command-line argument.
 
 ## IPv4 network configuration
 
