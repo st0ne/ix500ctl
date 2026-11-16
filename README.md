@@ -19,6 +19,7 @@ A user-confirmed test on a real ScanSnap iX500 running firmware `0U00` verified 
 - Read USB device identity, SCSI INQUIRY information, and firmware information.
 - Read Wi-Fi hardware-switch status and the saved Wi-Fi profile, including the WLAN MAC address.
 - Configure an SSID with WPA2-PSK/AES over USB, using a hidden password prompt.
+- Read or set the separate ScanSnap Connect/AirScap scanner-connection password over USB; `set` uses a hidden prompt and preserves the scanner's password-display setting.
 - Compare a hidden candidate password with the saved key representation using `wifi verify-key`; output is limited to `MATCH`, `MISMATCH`, or `INCONCLUSIVE`.
 - Show the scanner-reported IPv4 profile and submit one-shot DHCP or static IPv4 configuration requests over USB.
 - Keep all device access on USB. The tool does not scan documents, call router APIs, or provide a network scan client.
@@ -84,6 +85,8 @@ Reconnect the scanner afterward. The rule uses `uaccess` for the active local us
 ix500ctl info
 ix500ctl firmware info
 ix500ctl device info
+ix500ctl device password show
+ix500ctl device password set --ask-password
 ix500ctl wifi status
 ix500ctl wifi profile
 ix500ctl wifi verify-key --ask-password
@@ -96,6 +99,21 @@ ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4
 ### Device information
 
 `info`, `device info`, and `firmware info` read scanner identity, inquiry, or firmware details over USB. `wifi status` reads the hardware-switch state. `wifi profile` displays saved/reported profile fields; it is not a live WLAN association check and does not display the saved key.
+
+### Scanner connection password
+
+The scanner-connection password used by ScanSnap Connect/AirScap is distinct from the WPA2 passphrase used to join an access point:
+
+1. **WLAN password** — the WPA2-PSK configured with `wifi set` and represented by the saved Wi-Fi profile's `SeqKey`.
+2. **Scanner connection password** — the `PwdMode`/`PwdCode` setting read or written by `device password`; `show` reads the scanner's native configuration file and displays the decoded value when enabled, while `set` requests it through a hidden terminal prompt.
+3. **Network pairing identity** — a separate value derived by the ScanSnap Connect/AirScap pairing flow. It is not the USB `PwdCode` representation and is not the WLAN passphrase.
+
+```sh
+ix500ctl device password show
+ix500ctl device password set --ask-password
+```
+
+Password management is limited to the iX500 with firmware `0U00`. The SET sends the scanner name, enabled-password flag, native encoded password field, and the existing password-display flag in one USB request; it does not submit or rewrite the WLAN profile. The operation is sent at most once. A transport error, timeout, unknown result, or nonzero scanner result is reported without retry; after an acknowledged SET, the tool reads the configuration back and compares it before reporting success. `show` intentionally prints the existing scanner-connection password to the terminal, so treat that terminal output as sensitive.
 
 ### Wi-Fi configuration
 
@@ -145,6 +163,7 @@ The implementation sends at most one IP-SET request and does not automatically r
 
 - Verified hardware scope is the Fujitsu ScanSnap iX500 with firmware `0U00`; other models and firmware versions are not claimed to be supported.
 - Wi-Fi provisioning is limited to WPA2-PSK/AES.
+- The scanner-connection-password `show`/READ path, AirScap WLAN pairing, scan-button operation, and document delivery to Paperless have been confirmed by the operator on an iX500 `0U00`. The `device password set` write and its post-SET readback have **not** been tested on real hardware.
 - IPv4 SET behavior has not received a successful hardware write test.
 - The project does not scan documents, control scan jobs, implement a network scan client, or inspect router-side state.
 - The tool is independent and is not affiliated with or endorsed by Fujitsu, PFU, or Ricoh.

@@ -1,5 +1,6 @@
 mod device_info;
 mod network;
+mod password;
 mod protocol;
 mod scanner;
 mod usb;
@@ -30,6 +31,19 @@ fn run() -> Result<(), String> {
         [cmd] if cmd == "info" => scanner::info(),
         [firmware, info] if firmware == "firmware" && info == "info" => scanner::firmware_info(),
         [device, info] if device == "device" && info == "info" => scanner::device_info(),
+        [device, password, show]
+            if device == "device" && password == "password" && show == "show" =>
+        {
+            password::show()
+        }
+        [device, password, set, ask]
+            if device == "device"
+                && password == "password"
+                && set == "set"
+                && ask == "--ask-password" =>
+        {
+            password::set_interactive()
+        }
         [wifi, status] if wifi == "wifi" && status == "status" => wifi::read_status_from_scanner(),
         [wifi, profile] if wifi == "wifi" && profile == "profile" => wifi_profile(),
         [wifi, verify_key, ask_password]
@@ -48,7 +62,7 @@ fn run() -> Result<(), String> {
 }
 
 fn print_usage() {
-    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi verify-key --ask-password\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show\n  ix500ctl network set --dhcp\n  ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4");
+    eprintln!("Usage:\n  ix500ctl info\n  ix500ctl firmware info\n  ix500ctl device info\n  ix500ctl device password show\n  ix500ctl device password set --ask-password\n  ix500ctl wifi status\n  ix500ctl wifi profile\n  ix500ctl wifi verify-key --ask-password\n  ix500ctl wifi set --ssid SSID --security WPA2-PSK --ask-password [--debug-protocol]\n  ix500ctl network show\n  ix500ctl network set --dhcp\n  ix500ctl network set --static --ip IPv4 --netmask IPv4 --gateway IPv4");
 }
 
 fn wifi_profile() -> Result<(), String> {
@@ -326,11 +340,22 @@ impl Drop for Secret {
 }
 
 fn read_password_hidden() -> Result<Secret, String> {
+    read_secret_hidden(b"WLAN password (hidden): ", "password")
+}
+
+fn read_scanner_connection_password_hidden() -> Result<Secret, String> {
+    read_secret_hidden(
+        b"Scanner connection password (hidden): ",
+        "scanner connection password",
+    )
+}
+
+fn read_secret_hidden(prompt: &[u8], label: &str) -> Result<Secret, String> {
     let tty = OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|error| format!("cannot open terminal for hidden password input: {error}"))?;
+        .map_err(|error| format!("cannot open terminal for hidden {label} input: {error}"))?;
     let tty_for_stty = tty
         .try_clone()
         .map_err(|error| format!("cannot access terminal: {error}"))?;
@@ -347,7 +372,7 @@ fn read_password_hidden() -> Result<Secret, String> {
     }
     let _echo = TerminalEchoGuard(echo_guard_file);
     let mut tty = tty;
-    tty.write_all(b"WLAN password (hidden): ")
+    tty.write_all(prompt)
         .map_err(|error| format!("terminal write failed: {error}"))?;
     tty.flush()
         .map_err(|error| format!("terminal flush failed: {error}"))?;
@@ -355,7 +380,8 @@ fn read_password_hidden() -> Result<Secret, String> {
     loop {
         let mut byte = [0u8; 1];
         if tty.read_exact(&mut byte).is_err() {
-            return Err("password input ended unexpectedly".into());
+            input.fill(0);
+            return Err(format!("{label} input ended unexpectedly"));
         }
         if byte[0] == b'\n' {
             break;
